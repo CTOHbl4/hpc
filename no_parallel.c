@@ -44,7 +44,7 @@ float* makeU0(int N, int M, int K, float Lx, float Ly, float Lz, float h) {
     }
     float x, y, z;
     int idxi, idxj;
-    #pragma omp parallel for private(idxi, idxj, x, y, z)
+
     for (int i = 0; i < N; i++) {
         idxi = i*M*K;
         x = i * h;
@@ -68,7 +68,7 @@ float* makeU1(float* ut0, int N, int M, int K, float Lx, float Ly, float Lz, flo
     }
     int idxi, idxj, jk;
     float l;
-    #pragma omp parallel for private(idxi, idxj, jk, l)
+
     for (int i = 0; i < N; i++) {
         idxi = i*M*K;
         for (int j = 1; j < M-1; j++) {
@@ -86,19 +86,21 @@ float* makeU1(float* ut0, int N, int M, int K, float Lx, float Ly, float Lz, flo
 void step(float** ut1_ptr, float** ut0_ptr, int N, int M, int K, float h, float tau, float a2) {
     float* ut1 = *ut1_ptr;
     float* ut0 = *ut0_ptr;
-    int idxj;
+    int idxi, idxj, jk;
     float l, dt2;
 
-    #pragma omp parallel for collapse(2) private(idxj, l, dt2)
-    for (int i = 0; i < N; i++)
+    for (int i = 0; i < N; i++) {
+        idxi = i*M*K;
         for (int j = 1; j < M-1; j++) {
-            idxj = i*M*K + j*K;
+            jk = j*K;
+            idxj = idxi + jk;
             for (int k = 0; k < K; k++) {
                 l = tau * tau * aaLaplasian(ut1, N, M, K, i, j, k, h, a2);
                 dt2 = 2*ut1[idxj+k] - ut0[idxj+k];
                 ut0[idxj+k] = dt2 + l;
             }
         }
+    }
     float* swap = *ut1_ptr;
     *ut1_ptr = *ut0_ptr;
     *ut0_ptr = swap;
@@ -118,7 +120,6 @@ void checkAgainstAnalytical(float* u, float* errors, int N, int M, int K, float 
     float maxError = 0.0f, x, y, z, analytical, numerical, oneError;
     int idx;
 
-    #pragma omp parallel for reduction(max:maxError) private(x, y, z, analytical, numerical, oneError, idx)
     for (int i = 0; i < N; i++) {
         x = i * h;
         for (int j = 0; j < M; j++) {
@@ -144,10 +145,6 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    int max_threads = omp_get_max_threads();
-    omp_set_num_threads(max_threads);
-    printf("Using OpenMP with %d threads\n", max_threads);
-
     int N = atoi(argv[1]), uShape = N*N*N, t = 0;
     printf("Number of nodes in one direction: %d\n", N);
     float L = strtof(argv[3], NULL), T = strtof(argv[2], NULL);
@@ -165,10 +162,10 @@ int main(int argc, char *argv[]) {
             mkdir("errors", 0700);
         }
     }
-    float* errors = calloc(uShape, sizeof(float));
     double start_time = omp_get_wtime();
 
     float* ut0 = makeU0(N, N, N, L, L, L, h);
+    float* errors = calloc(uShape, sizeof(float));
     if (ut0 == NULL || errors == NULL) {
         return -1;
     }
@@ -210,7 +207,7 @@ int main(int argc, char *argv[]) {
         printf("Error opening file times!\n");
     } else {
         char record[100];
-        int chars_written = snprintf(record, 100, "openmp,%.3f,%d,%.2f,,%d\n", time, N, L, max_threads);
+        int chars_written = snprintf(record, 100, "no_parallel,%.3f,%d,%.2f,,\n", time, N, L);
         if (chars_written > 0 && chars_written < 100) {
             fwrite(record, sizeof(char), chars_written, file);
         }
