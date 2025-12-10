@@ -22,60 +22,24 @@ float phi(float Lx, float Ly, float Lz, float x, float y, float z) {
 float aaLaplasian(float* ut, int N, int M, int K, int i, int j, int k, float h, float a2, 
                   float* xPrev, float* xNext, float* yPrev, float* yNext,
                   float* zPrev, float* zNext, int MLow, int MGlobal) {
-    int mk = M*K;
-    int jk = j*K;
-    int imk = mk * i;
-    float left_val, right_val, front_val, back_val, bottom_val, top_val;
-    // x
-    if (i == 0) {
-        left_val = xPrev[jk + k];
-    } else {
-        left_val = ut[(imk - mk) + jk + k];
-    }
-    if (i == N-1) {
-        right_val = xNext[jk + k];
-    } else {
-        right_val = ut[(imk + mk) + jk + k];
-    }
+    int MK = M*K;
+    int jK = j*K;
+    int imk = MK * i;
+    int idx = imk + jK + k;
+    float centerx6 = 6.0f * ut[idx];
 
-    // y
-    if (j == 0) {
-        if (MLow == 0) {
-            front_val = 0.0;
-        } else {
-            front_val = yPrev[i*K + k];
-        }
-    } else {
-        front_val = ut[imk + (jk - K) + k];
-    }
+    float left = (i > 0) ? ut[idx - MK] : xPrev[jK + k];
+    float right = (i < N-1) ? ut[idx + MK] : xNext[jK + k];
+    float front = (j > 0) ? ut[idx - K] : yPrev[i*K + k];
+    float back = (j < M-1) ? ut[idx + K] : yNext[i*K + k];
+    float bottom = (k > 0) ? ut[idx - 1] : zPrev[i*M + j];
+    float top = (k < K-1) ? ut[idx + 1] : zNext[i*M + j];
     
-    if (j == M-1) {
-        if (MLow + M >= MGlobal) {
-            back_val = 0.0;
-        } else {
-            back_val = yNext[i*K + k];
-        }
-    } else {
-        back_val = ut[imk + (jk + K) + k];
-    }
-
-    // z
-    if (k == 0) {
-        bottom_val = zPrev[i*M + j];
-    } else {
-        bottom_val = ut[imk + jk + (k-1)];
-    }
-    if (k == K-1) {
-        top_val = zNext[i*M + j];
-    } else {
-        top_val = ut[imk + jk + (k+1)];
-    }
-
-    float d2x = left_val - 2*ut[imk + jk + k] + right_val;
-    float d2y = front_val - 2*ut[imk + jk + k] + back_val;
-    float d2z = bottom_val - 2*ut[imk + jk + k] + top_val;
-
-    return a2 * (d2x + d2y + d2z) / (h * h);
+    float d2x = left + right;
+    float d2y = front + back;
+    float d2z = bottom + top;
+    
+    return a2 * (d2x + d2y + d2z - centerx6) / (h*h);
 }
 
 float* makeU0(int NLow, int MLow, int KLow, int N, int M, int K, int NGlobal, int MGlobal, int KGlobal, float Lx, float Ly, float Lz, float h) {
@@ -287,6 +251,7 @@ int main(int argc, char *argv[]) {
     int required = MPI_THREAD_FUNNELED;
     int provided;
     MPI_Init_thread(&argc, &argv, required, &provided);
+    double startFull = MPI_Wtime();
     double startInit = MPI_Wtime();
     
     int rank, size;
@@ -439,9 +404,10 @@ int main(int argc, char *argv[]) {
     }
     
     double timeLoop = MPI_Wtime() - startLoop;
+    double timeFull = MPI_Wtime() - startFull;
 
     if (rank == 0) {
-        printf("Simulation completed: %d time steps, Time: init-%f, U0-%f, exchanges-%f, U1-%f, steps-%f, Loop-%f, Full-%f\n", t, timeInit, timeU0, timeExchanges, timeU1, timeSteps, timeLoop, timeInit+timeU0+timeU1+timeLoop);
+        printf("Simulation completed: %d time steps, Time: init-%f, U0-%f, exchanges-%f, U1-%f, steps-%f, Loop-%f, Full-%f\n", t, timeInit, timeU0, timeExchanges, timeU1, timeSteps, timeLoop, timeFull);
     }
 
     float* borders[12] = {ut0, ut1, xPrev, xNext, yPrev, yPrevSend, yNext, yNextSend, zPrev, zPrevSend, zNext, zNextSend};

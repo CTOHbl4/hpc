@@ -5,110 +5,50 @@
 #include <errno.h>
 #include <mpi.h>
 
+__constant__ float c_Lx, c_Ly, c_Lz;
+__constant__ float c_h, c_inv_h2;
+__constant__ float c_tau, c_tau2, c_a2, c_Laplacian;
+__constant__ int c_N, c_M, c_K;
+__constant__ int c_NLow, c_MLow, c_KLow;
+__constant__ int c_NGlobal, c_MGlobal, c_KGlobal;
+__constant__ int c_MLow0, c_JRight, c_MK;
+
 #define PI 3.14159265359
 #define DIMENTIONS 3
 
-__device__ float analyticalSolution_device(float Lx, float Ly, float Lz, 
-                                          float x, float y, float z, float t) {
-    float at = PI/3.0f * sqrtf(4.0f/(Lx*Lx) + 1.0f/(Ly*Ly) + 4.0f/(Lz*Lz));
-    return sinf(2.0f*PI*x/Lx) * sinf((1.0f + y/Ly) * PI) * 
-           sinf((1.0f + z/Lz) * 2.0f*PI) * cosf(at*t + PI);
+__device__ float analyticalSolution_device(float x, float y, float z, float t) {
+    float at = PI/3.0f * sqrtf(4.0f/(c_Lx*c_Lx) + 1.0f/(c_Ly*c_Ly) + 4.0f/(c_Lz*c_Lz));
+    return sinf(2.0f*PI*x/c_Lx) * sinf((1.0f + y/c_Ly) * PI) * 
+           sinf((1.0f + z/c_Lz) * 2.0f*PI) * cosf(at*t + PI);
 }
 
-__device__ float phi_device(float Lx, float Ly, float Lz, 
-                           float x, float y, float z) {
-    return analyticalSolution_device(Lx, Ly, Lz, x, y, z, 0.0f);
+__device__ float phi_device(float x, float y, float z) {
+    return analyticalSolution_device(x, y, z, 0.0f);
 }
 
-__device__ float aaLaplasian_cuda(float* ut, int N, int M, int K, int i, int j, int k, float h, float a2,
-                                  float* xPrev, float* xNext, float* yPrev, float* yNext,
-                                  float* zPrev, float* zNext, int MLow, int MGlobal) {
-    int mk = M * K;
-    int jk = j * K;
-    int imk = mk * i;
-    int idx = imk + jk + k;
-
-    float left_val, right_val, front_val, back_val, bottom_val, top_val;
-    float center_val = ut[idx];
-
-    if (i == 0) {
-        left_val = xPrev[jk + k];
-    } else {
-        left_val = ut[idx - mk];
-    }
-    
-    if (i == N - 1) {
-        right_val = xNext[jk + k];
-    } else {
-        right_val = ut[idx + mk];
-    }
-
-    if (j == 0) {
-        if (MLow == 0) {
-            front_val = 0.0f;
-        } else {
-            front_val = yPrev[i * K + k];
-        }
-    } else {
-        front_val = ut[idx - K];
-    }
-
-    if (j == M - 1) {
-        if (MLow + M >= MGlobal) {
-            back_val = 0.0f;
-        } else {
-            back_val = yNext[i * K + k];
-        }
-    } else {
-        back_val = ut[idx + K];
-    }
-
-    if (k == 0) {
-        bottom_val = zPrev[i * M + j];
-    } else {
-        bottom_val = ut[idx - 1];
-    }
-
-    if (k == K - 1) {
-        top_val = zNext[i * M + j];
-    } else {
-        top_val = ut[idx + 1];
-    }
-
-    float d2x = left_val - 2 * center_val + right_val;
-    float d2y = front_val - 2 * center_val + back_val;
-    float d2z = bottom_val - 2 * center_val + top_val;
-
-    return a2 * (d2x + d2y + d2z) / (h * h);
-}
-
-__global__ void initialize_u0_kernel(float* res, int NLow, int MLow, int KLow,
-                                     int N, int M, int K, int NGlobal, int MGlobal, int KGlobal,
-                                     float Lx, float Ly, float Lz, float h) {
+__global__ void initialize_u0_kernel(float* res) {
 
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i >= N || j >= M || k >= K) return;
+    if (i >= c_N || j >= c_M || k >= c_K) return;
     
-    int idx = i * M * K + j * K + k;
+    int idx = i *c_MK + j * c_K + k;
 
-    if ((MLow == 0 && j == 0) || (MLow + M >= MGlobal && j == M - 1)) {
+    if ((c_MLow0 && j == 0) || (c_JRight && j == c_M - 1)) {
         res[idx] = 0.0f;
         return;
     }
 
-    float x = (i + NLow) * h;
-    float y = (j + MLow) * h;
-    float z = (k + KLow) * h;
+    float x = (i + c_NLow) * c_h;
+    float y = (j + c_MLow) * c_h;
+    float z = (k + c_KLow) * c_h;
 
-    res[idx] = phi_device(Lx, Ly, Lz, x, y, z);
+    res[idx] = phi_device(x, y, z);
 }
 
-__global__ void initialize_u1_kernel(float* res, float* ut0, int NLow, int MLow, int KLow,
-                                     int N, int M, int K, int NGlobal, int MGlobal, int KGlobal,
-                                     float Lx, float Ly, float Lz, float h, float tau, float a2,
+__global__ void initialize_u1_kernel(float* res, float* ut,
                                      float* xPrev, float* xNext, float* yPrev, float* yNext,
                                      float* zPrev, float* zNext) {
 
@@ -116,57 +56,43 @@ __global__ void initialize_u1_kernel(float* res, float* ut0, int NLow, int MLow,
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i >= N || j >= M || k >= K) return;
-    int idx = i * M * K + j * K + k;
-    if ((MLow == 0 && j == 0) || (MLow + M >= MGlobal && j == M - 1)) {
+    if (i >= c_N || j >= c_M || k >= c_K) return;
+    int idx = i * c_MK + j * c_K + k;
+    if ((c_MLow0 && j == 0) || (c_JRight && j == c_M - 1)) {
         res[idx] = 0.0f;
         return;
     }
-    float l = tau * tau * aaLaplasian_cuda(ut0, N, M, K, i, j, k, h, a2,
-                                          xPrev, xNext, yPrev, yNext,
-                                          zPrev, zNext, MLow, MGlobal) / 2.0f;
-    res[idx] = ut0[idx] + l;
+    float center = ut[idx];
+
+    float left = (i > 0) ? ut[idx - c_MK] : xPrev[j*c_K + k];
+    float right = (i < c_N-1) ? ut[idx + c_MK] : xNext[j*c_K + k];
+    float front = (j > 0) ? ut[idx - c_K] : yPrev[i*c_K + k];
+    float back = (j < c_M-1) ? ut[idx + c_K] : yNext[i*c_K + k];
+    float bottom = (k > 0) ? ut[idx - 1] : zPrev[i*c_M + j];
+    float top = (k < c_K-1) ? ut[idx + 1] : zNext[i*c_M + j];
+
+    float laplacian = (left + right + front + back + bottom + top - 6.0f * center);
+
+    float l = c_Laplacian * laplacian / 2.0f;
+    res[idx] = center + l;
 }
 
-void makeU0_device(float* d_ut0, int NLow, int MLow, int KLow, int N, int M, int K,
-                     int NGlobal, int MGlobal, int KGlobal,
-                     float Lx, float Ly, float Lz, float h) {
-    dim3 blockSize(8, 8, 8);
-    dim3 gridSize(
-        (N + blockSize.x - 1) / blockSize.x,
-        (M + blockSize.y - 1) / blockSize.y,
-        (K + blockSize.z - 1) / blockSize.z
-    );
-
-    initialize_u0_kernel<<<gridSize, blockSize>>>(d_ut0, NLow, MLow, KLow,
-                                                 N, M, K, NGlobal, MGlobal, KGlobal,
-                                                 Lx, Ly, Lz, h);
+void makeU0_device(float* d_ut0, dim3 blockSize, dim3 gridSize) {
+    initialize_u0_kernel<<<gridSize, blockSize>>>(d_ut0);
     cudaDeviceSynchronize();
 }
 
-void makeU1_device(float* d_ut1, float* d_ut0, int NLow, int MLow, int KLow,
-                     int N, int M, int K, int NGlobal, int MGlobal, int KGlobal,
-                     float Lx, float Ly, float Lz, float h, float tau, float a2,
+void makeU1_device(float* d_ut1, float* d_ut0,
+                     dim3 blockSize, dim3 gridSize,
                      float* d_xPrev, float* d_xNext, float* d_yPrev, float* d_yNext,
                      float* d_zPrev, float* d_zNext) {
-    dim3 blockSize(8, 8, 8);
-    dim3 gridSize(
-        (N + blockSize.x - 1) / blockSize.x,
-        (M + blockSize.y - 1) / blockSize.y,
-        (K + blockSize.z - 1) / blockSize.z
-    );
-    
-    initialize_u1_kernel<<<gridSize, blockSize>>>(d_ut1, d_ut0, NLow, MLow, KLow,
-                                                     N, M, K, NGlobal, MGlobal, KGlobal,
-                                                     Lx, Ly, Lz, h, tau, a2,
+    initialize_u1_kernel<<<gridSize, blockSize>>>(d_ut1, d_ut0,
                                                      d_xPrev, d_xNext, d_yPrev, d_yNext,
                                                      d_zPrev, d_zNext);
     cudaDeviceSynchronize();
 }
 
-__global__ void step_kernel(float* ut1, float* ut0, int NLow, int MLow, int KLow, 
-                            int N, int M, int K, int NGlobal, int MGlobal, int KGlobal,
-                            float h, float tau, float a2,
+__global__ void step_kernel(float* ut1, float* ut0,
                             float* xPrev, float* xNext, 
                             float* yPrev, float* yNext,
                             float* zPrev, float* zNext) {
@@ -175,41 +101,56 @@ __global__ void step_kernel(float* ut1, float* ut0, int NLow, int MLow, int KLow
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i >= N || j >= M || k >= K) return;
-
-    if ((MLow == 0 && j == 0) || (MLow + M >= MGlobal && j == M - 1)) return;
+    if ((i >= c_N) || (j >= c_M) || (k >= c_K) || (c_MLow0 && j == 0) || (c_JRight && j == c_M - 1)) return;
     
-    int idx = i * M * K + j * K + k;
+    int idx = i * c_MK + j * c_K + k;
 
-    float l = tau * tau * aaLaplasian_cuda(ut1, N, M, K, i, j, k, h, a2,
-                                          xPrev, xNext, yPrev, yNext,
-                                          zPrev, zNext, MLow, MGlobal);
-    float dt2 = 2 * ut1[idx] - ut0[idx];
+    float centerx2 = 2.0f * ut1[idx];
+
+    float left = (i > 0) ? ut1[idx - c_MK] : xPrev[j*c_K + k];
+    float right = (i < c_N-1) ? ut1[idx + c_MK] : xNext[j*c_K + k];
+    float front = (j > 0) ? ut1[idx - c_K] : yPrev[i*c_K + k];
+    float back = (j < c_M-1) ? ut1[idx + c_K] : yNext[i*c_K + k];
+    float bottom = (k > 0) ? ut1[idx - 1] : zPrev[i*c_M + j];
+    float top = (k < c_K-1) ? ut1[idx + 1] : zNext[i*c_M + j];
+
+    float laplacian = (left + right + front + back + bottom + top - 3.0f * centerx2);
+
+    float l = c_Laplacian * laplacian;
+
+    float dt2 = centerx2 - ut0[idx];
     ut0[idx] = dt2 + l;
 }
 
-__global__ void pack_z_boundary_kernel(float* local_data, float* z_send, 
-                                       int N, int M, int K, int exchange_idx) {
+void makeStep_device(float* d_ut1, float* d_ut0,
+                     dim3 blockSize, dim3 gridSize,
+                     float* d_xPrev, float* d_xNext, float* d_yPrev, float* d_yNext,
+                     float* d_zPrev, float* d_zNext) {
+    step_kernel<<<gridSize, blockSize>>>(d_ut1, d_ut0,
+                                            d_xPrev, d_xNext, d_yPrev, d_yNext,
+                                            d_zPrev, d_zNext);
+}
+
+__global__ void pack_z_boundary_kernel(float* local_data, float* z_send, int exchange_idx) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     
-    if (i >= N || j >= M) return;
+    if (i >= c_N || j >= c_M) return;
     
-    int src_idx = i * M * K + j * K + exchange_idx;
-    int dst_idx = i * M + j;
+    int dst_idx = i * c_M + j;
+    int src_idx = i * c_MK + j * c_K + exchange_idx;
     
     z_send[dst_idx] = local_data[src_idx];
 }
 
-__global__ void pack_y_boundary_kernel(float* local_data, float* y_send,
-                                       int N, int M, int K, int j_offset) {
+__global__ void pack_y_boundary_kernel(float* local_data, float* y_send, int j_offset) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int k = blockIdx.y * blockDim.y + threadIdx.y;
     
-    if (i >= N || k >= K) return;
+    if (i >= c_N || k >= c_K) return;
     
-    int src_idx = i * M * K + j_offset * K + k;
-    int dst_idx = i * K + k;
+    int src_idx = (i * c_M + j_offset) * c_K + k;
+    int dst_idx = i * c_K + k;
     
     y_send[dst_idx] = local_data[src_idx];
 }
@@ -224,29 +165,31 @@ void exchange_cuda(float* d_local_data, int N, int M, int K, MPI_Comm cart_comm,
                    int left_rank, int right_rank, int front_rank, int back_rank,
                    int down_rank, int up_rank, int NLow, int NGlobal, int MLow, 
                    int MGlobal, int KLow, int KGlobal) {
-    cudaDeviceSynchronize();
     
     MPI_Request requests[12];
     int count = 0;
-    
+    const int MK = M*K;
+    const int NM = N*M;
+    const int NK = N*K;
+
     // x
     int exchangeIdxXPrev = 0;
-    int exchangeIdxXNext = (N - 1) * M * K;
+    int exchangeIdxXNext = (N - 1) * MK;
     if (NLow == 0) {
-        exchangeIdxXPrev = M * K;
+        exchangeIdxXPrev = MK;
     }
     if (NLow + N >= NGlobal) {
-        exchangeIdxXNext = (N - 2) * M * K;
+        exchangeIdxXNext = (N - 2) * MK;
     }
 
-    cudaMemcpy(h_xPrevSend, d_local_data + exchangeIdxXPrev, M * K * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_xNextSend, d_local_data + exchangeIdxXNext, M * K * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(h_xPrevSend, d_local_data + exchangeIdxXPrev, MK * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_xNextSend, d_local_data + exchangeIdxXNext, MK * sizeof(float), cudaMemcpyDeviceToHost);
 
-    MPI_Isend(h_xPrevSend, M * K, MPI_FLOAT, left_rank, 0, cart_comm, &requests[count++]);
-    MPI_Irecv(h_xPrev, M * K, MPI_FLOAT, left_rank, 1, cart_comm, &requests[count++]);
+    MPI_Isend(h_xPrevSend, MK, MPI_FLOAT, left_rank, 0, cart_comm, &requests[count++]);
+    MPI_Irecv(h_xPrev, MK, MPI_FLOAT, left_rank, 1, cart_comm, &requests[count++]);
 
-    MPI_Isend(h_xNextSend, M * K, MPI_FLOAT, right_rank, 1, cart_comm, &requests[count++]);
-    MPI_Irecv(h_xNext, M * K, MPI_FLOAT, right_rank, 0, cart_comm, &requests[count++]);
+    MPI_Isend(h_xNextSend, MK, MPI_FLOAT, right_rank, 1, cart_comm, &requests[count++]);
+    MPI_Irecv(h_xNext, MK, MPI_FLOAT, right_rank, 0, cart_comm, &requests[count++]);
     
     // z
     int exchangeIdxZPrev = 0;
@@ -257,86 +200,74 @@ void exchange_cuda(float* d_local_data, int N, int M, int K, MPI_Comm cart_comm,
     if (KLow + K >= KGlobal) {
         exchangeIdxZNext = K - 2;
     }
-    dim3 blockSize_z(16, 16);
+    dim3 blockSize_z(8, 8);
     dim3 gridSize_z((N + blockSize_z.x - 1) / blockSize_z.x,
                     (M + blockSize_z.y - 1) / blockSize_z.y);
 
-    pack_z_boundary_kernel<<<gridSize_z, blockSize_z>>>(
-        d_local_data, d_zPrev, N, M, K, exchangeIdxZPrev);
-    pack_z_boundary_kernel<<<gridSize_z, blockSize_z>>>(
-        d_local_data, d_zNext, N, M, K, exchangeIdxZNext);
+    pack_z_boundary_kernel<<<gridSize_z, blockSize_z>>>(d_local_data, d_zPrev, exchangeIdxZPrev);
+    pack_z_boundary_kernel<<<gridSize_z, blockSize_z>>>(d_local_data, d_zNext, exchangeIdxZNext);
 
-    cudaMemcpy(h_zPrevSend, d_zPrev, N * M * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_zNextSend, d_zNext, N * M * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(h_zPrevSend, d_zPrev, NM * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_zNextSend, d_zNext, NM * sizeof(float), cudaMemcpyDeviceToHost);
 
-    MPI_Isend(h_zPrevSend, N * M, MPI_FLOAT, down_rank, 4, cart_comm, &requests[count++]);
-    MPI_Irecv(h_zPrev, N * M, MPI_FLOAT, down_rank, 5, cart_comm, &requests[count++]);
+    MPI_Isend(h_zPrevSend, NM, MPI_FLOAT, down_rank, 4, cart_comm, &requests[count++]);
+    MPI_Irecv(h_zPrev, NM, MPI_FLOAT, down_rank, 5, cart_comm, &requests[count++]);
     
-    MPI_Isend(h_zNextSend, N * M, MPI_FLOAT, up_rank, 5, cart_comm, &requests[count++]);
-    MPI_Irecv(h_zNext, N * M, MPI_FLOAT, up_rank, 4, cart_comm, &requests[count++]);
+    MPI_Isend(h_zNextSend, NM, MPI_FLOAT, up_rank, 5, cart_comm, &requests[count++]);
+    MPI_Irecv(h_zNext, NM, MPI_FLOAT, up_rank, 4, cart_comm, &requests[count++]);
 
+    dim3 blockSize_y(8, 8);
+    dim3 gridSize_y((N + blockSize_y.x - 1) / blockSize_y.x,
+                    (K + blockSize_y.y - 1) / blockSize_y.y);
     if (front_rank != MPI_PROC_NULL) {
-        dim3 blockSize_y(16, 16);
-        dim3 gridSize_y((N + blockSize_y.x - 1) / blockSize_y.x,
-                        (K + blockSize_y.y - 1) / blockSize_y.y);
 
-        pack_y_boundary_kernel<<<gridSize_y, blockSize_y>>>(
-            d_local_data, d_yPrev, N, M, K, 0);
+        pack_y_boundary_kernel<<<gridSize_y, blockSize_y>>>(d_local_data, d_yPrev, 0);
 
-        cudaMemcpy(h_yPrevSend, d_yPrev, N * K * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_yPrevSend, d_yPrev, NK * sizeof(float), cudaMemcpyDeviceToHost);
 
-        MPI_Isend(h_yPrevSend, N * K, MPI_FLOAT, front_rank, 2, cart_comm, &requests[count++]);
-        MPI_Irecv(h_yPrev, N * K, MPI_FLOAT, front_rank, 3, cart_comm, &requests[count++]);
+        MPI_Isend(h_yPrevSend, NK, MPI_FLOAT, front_rank, 2, cart_comm, &requests[count++]);
+        MPI_Irecv(h_yPrev, NK, MPI_FLOAT, front_rank, 3, cart_comm, &requests[count++]);
     }
 
     if (back_rank != MPI_PROC_NULL) {
-        dim3 blockSize_y(16, 16);
-        dim3 gridSize_y((N + blockSize_y.x - 1) / blockSize_y.x,
-                        (K + blockSize_y.y - 1) / blockSize_y.y);
+        pack_y_boundary_kernel<<<gridSize_y, blockSize_y>>>(d_local_data, d_yNext, M - 1);
 
-        pack_y_boundary_kernel<<<gridSize_y, blockSize_y>>>(
-            d_local_data, d_yNext, N, M, K, M - 1);
+        cudaMemcpy(h_yNextSend, d_yNext, NK * sizeof(float), cudaMemcpyDeviceToHost);
 
-        cudaMemcpy(h_yNextSend, d_yNext, N * K * sizeof(float), cudaMemcpyDeviceToHost);
-
-        MPI_Isend(h_yNextSend, N * K, MPI_FLOAT, back_rank, 3, cart_comm, &requests[count++]);
-        MPI_Irecv(h_yNext, N * K, MPI_FLOAT, back_rank, 2, cart_comm, &requests[count++]);
+        MPI_Isend(h_yNextSend, NK, MPI_FLOAT, back_rank, 3, cart_comm, &requests[count++]);
+        MPI_Irecv(h_yNext, NK, MPI_FLOAT, back_rank, 2, cart_comm, &requests[count++]);
     }
 
     MPI_Waitall(count, requests, MPI_STATUSES_IGNORE);
 
-    cudaMemcpy(d_xPrev, h_xPrev, M * K * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_xNext, h_xNext, M * K * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(d_xPrev, h_xPrev, MK * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(d_xNext, h_xNext, MK * sizeof(float), cudaMemcpyHostToDevice);
     
-    cudaMemcpy(d_zPrev, h_zPrev, N * M * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_zNext, h_zNext, N * M * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(d_zPrev, h_zPrev, NM * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(d_zNext, h_zNext, NM * sizeof(float), cudaMemcpyHostToDevice);
 
     if (front_rank != MPI_PROC_NULL) {
-        cudaMemcpy(d_yPrev, h_yPrev, N * K * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(d_yPrev, h_yPrev, NK * sizeof(float), cudaMemcpyHostToDevice);
     }
     
     if (back_rank != MPI_PROC_NULL) {
-        cudaMemcpy(d_yNext, h_yNext, N * K * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpyAsync(d_yNext, h_yNext, NK * sizeof(float), cudaMemcpyHostToDevice);
     }
 }
 
-__global__ void compute_errors_kernel(float* d_u, float* d_errors, 
-                                      int NLow, int MLow, int KLow,
-                                      int N, int M, int K,
-                                      float Lx, float Ly, float Lz,
-                                      float t, float h) {
+__global__ void compute_errors_kernel(float* d_u, float* d_errors, float t) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if (i >= N || j >= M || k >= K) return;
+    if (i >= c_N || j >= c_M || k >= c_K) return;
 
-    int idx = i * M * K + j * K + k;
+    int idx = i * c_MK + j * c_K + k;
 
-    float x = (i + NLow) * h;
-    float y = (j + MLow) * h;
-    float z = (k + KLow) * h;
-    float analytical = analyticalSolution_device(Lx, Ly, Lz, x, y, z, t);
+    float x = (i + c_NLow) * c_h;
+    float y = (j + c_MLow) * c_h;
+    float z = (k + c_KLow) * c_h;
+    float analytical = analyticalSolution_device(x, y, z, t);
 
     float numerical = d_u[idx];
 
@@ -344,85 +275,33 @@ __global__ void compute_errors_kernel(float* d_u, float* d_errors,
 }
 
 void compute_errors_device(float* d_u, float* d_errors,
-                           int NLow, int MLow, int KLow,
-                           int N, int M, int K,
-                           float Lx, float Ly, float Lz,
-                           float t, float h) {
-
-    dim3 blockSize(8, 8, 4);
-    dim3 gridSize(
-        (N + blockSize.x - 1) / blockSize.x,
-        (M + blockSize.y - 1) / blockSize.y,
-        (K + blockSize.z - 1) / blockSize.z
-    );
-    compute_errors_kernel<<<gridSize, blockSize>>>(d_u, d_errors,
-                                                  NLow, MLow, KLow,
-                                                  N, M, K,
-                                                  Lx, Ly, Lz, t, h);
-    cudaDeviceSynchronize();
+                           dim3 blockSize, dim3 gridSize, float t) {
+    compute_errors_kernel<<<gridSize, blockSize>>>(d_u, d_errors, t);
 }
 
-// __global__ void find_max_kernel(float* vecIn, float* vecOut, int n) {
-//     extern __shared__ float shMass[];
+__global__ void pairwise_max_kernel(float* array, int stride) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
-//     unsigned int tid = threadIdx.x;
-//     unsigned int idx = blockIdx.x * blockDim.x * 2 + tid;
+    if (idx >= stride) return;
     
-//     float myMax = 0.0f;
+    float val1 = array[idx];
+    float val2 = array[stride + idx];
+    array[idx] = fmaxf(val1, val2);
+}
 
-//     if (idx < n) {
-//         myMax = vecIn[idx];
-//     }
-//     if (idx + blockDim.x < n) {
-//         myMax = fmaxf(myMax, vecIn[idx + blockDim.x]);
-//     }
-    
-//     shMass[tid] = myMax;
-//     __syncthreads();
-
-//     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-//         if (tid < s) {
-//             shMass[tid] = fmaxf(shMass[tid], shMass[tid + s]);
-//         }
-//         __syncthreads();
-//     }
-
-//     if (tid == 0) {
-//         vecOut[blockIdx.x] = shMass[0];
-//     }
-// }
-
-// float find_max_device(float* d_array, int size) {
-//     int threads = 256;
-//     int blocks = (size + threads * 2 - 1) / (threads * 2);
-    
-//     if (blocks == 0) blocks = 1;
-    
-//     float* d_block_max;
-//     cudaMalloc(&d_block_max, blocks * sizeof(float));
-    
-//     find_max_kernel<<<blocks, threads, threads * sizeof(float)>>>(d_array, d_block_max, size);
-//     float max_value;
-//     if (blocks > 1) {
-//         max_value = find_max_device(d_block_max, blocks);
-//     } else {
-//         cudaMemcpy(&max_value, d_block_max, sizeof(float), cudaMemcpyDeviceToHost);
-//     }
-    
-//     cudaFree(d_block_max);
-//     return max_value;
-// }
-
-float find_max_host(float* h_array, int size) {
-    float res = 0.0f, e;
-    for (int i = 0; i < size; i++) {
-        e = h_array[i];
-        if (e > res)
-            res = e;
+float find_max_device(float* d_array, int size) {
+    for (int stride = size >> 1; stride > 0; stride >>= 1) {
+        int threads = min(1024, stride);
+        int blocks = (stride + threads - 1) / threads;
+        
+        pairwise_max_kernel<<<blocks, threads>>>(d_array, stride);
+        cudaDeviceSynchronize();
     }
-    return res;
+    
+    float max_value;
+    cudaMemcpy(&max_value, d_array, sizeof(float), cudaMemcpyDeviceToHost);
+    return max_value;
 }
-
 
 void saveFloatsBinary(const char* filename, float* array, int size) {
     FILE* file = fopen(filename, "wb");
@@ -437,15 +316,58 @@ void saveFloatsBinary(const char* filename, float* array, int size) {
     }
 }
 
-void freeBuffersAndTerminate(float** hostBuffers, int numHostBuffers, float** deviceBuffers, int numDeviceBuffers, MPI_Comm cart_comm) {
+void freeBuffersAndTerminate(float** hostBuffers, int numHostBuffers, float** deviceBuffers, int numDeviceBuffers,
+                             cudaEvent_t* events, int numEvents, MPI_Comm cart_comm) {
     for (int i = 0; i < numHostBuffers; i++)
         if (hostBuffers[i] != NULL)
             cudaFreeHost(hostBuffers[i]);
     for (int i = 0; i < numDeviceBuffers; i++)
         if (deviceBuffers[i] != NULL)
             cudaFree(deviceBuffers[i]);
+    for (int i = 0; i < numEvents; i++)
+        cudaEventDestroy(events[i]);
     MPI_Comm_free(&cart_comm);
     MPI_Finalize();
+}
+
+void setup_constants(int N, int M, int K, int NLow, int MLow, int KLow,
+                     int NGlobal, int MGlobal, int KGlobal,
+                     float Lx, float Ly, float Lz, 
+                     float h, float tau, float a2) {
+
+    float inv_h2 = 1.0f / (h * h);
+    float tau2 = tau * tau;
+    float laplacian = a2 * inv_h2 * tau2;
+
+    int JRight = (M + MLow >= MGlobal), MLow0 = (MLow == 0), MK = M*K;
+
+    cudaMemcpyToSymbol(c_JRight, &JRight, sizeof(int));
+    cudaMemcpyToSymbol(c_MLow0, &MLow0, sizeof(int));
+    cudaMemcpyToSymbol(c_MK, &MK, sizeof(int));
+
+    cudaMemcpyToSymbol(c_Lx, &Lx, sizeof(float));
+    cudaMemcpyToSymbol(c_Ly, &Ly, sizeof(float));
+    cudaMemcpyToSymbol(c_Lz, &Lz, sizeof(float));
+    
+    cudaMemcpyToSymbol(c_Laplacian, &laplacian, sizeof(float));
+    cudaMemcpyToSymbol(c_h, &h, sizeof(float));
+    cudaMemcpyToSymbol(c_inv_h2, &inv_h2, sizeof(float));
+    
+    cudaMemcpyToSymbol(c_tau, &tau, sizeof(float));
+    cudaMemcpyToSymbol(c_tau2, &tau2, sizeof(float));
+    cudaMemcpyToSymbol(c_a2, &a2, sizeof(float));
+    
+    cudaMemcpyToSymbol(c_N, &N, sizeof(int));
+    cudaMemcpyToSymbol(c_M, &M, sizeof(int));
+    cudaMemcpyToSymbol(c_K, &K, sizeof(int));
+    
+    cudaMemcpyToSymbol(c_NLow, &NLow, sizeof(int));
+    cudaMemcpyToSymbol(c_MLow, &MLow, sizeof(int));
+    cudaMemcpyToSymbol(c_KLow, &KLow, sizeof(int));
+    
+    cudaMemcpyToSymbol(c_NGlobal, &NGlobal, sizeof(int));
+    cudaMemcpyToSymbol(c_MGlobal, &MGlobal, sizeof(int));
+    cudaMemcpyToSymbol(c_KGlobal, &KGlobal, sizeof(int));
 }
 
 int main(int argc, char *argv[]) {
@@ -508,6 +430,10 @@ int main(int argc, char *argv[]) {
     if (coords[2] == dims[2]-1) K = NGlobal - KLow;
 
     int uShape = N*M*K;
+    setup_constants(N, M, K, NLow, MLow, KLow,
+                     NGlobal, NGlobal, NGlobal,
+                     L, L, L, h, tau, a2);
+
 
     float *h_ut = NULL, *h_errors = NULL;
     float *h_xPrev = NULL, *h_xPrevSend = NULL, *h_xNext = NULL, *h_xNextSend = NULL;
@@ -516,9 +442,7 @@ int main(int argc, char *argv[]) {
 
     cudaMallocHost(&h_ut, uShape * sizeof(float)); cudaMallocHost(&h_errors, uShape * sizeof(float));
     cudaMallocHost(&h_xPrev, M*K * sizeof(float)); cudaMallocHost(&h_xPrevSend, M*K * sizeof(float)); cudaMallocHost(&h_xNext, M*K * sizeof(float)); cudaMallocHost(&h_xNextSend, M*K * sizeof(float));
-    
     cudaMallocHost(&h_yPrev, N*K * sizeof(float)); cudaMallocHost(&h_yPrevSend, N*K * sizeof(float)); cudaMallocHost(&h_yNext, N*K * sizeof(float)); cudaMallocHost(&h_yNextSend, N*K * sizeof(float));
-    
     cudaMallocHost(&h_zPrev, N*M * sizeof(float)); cudaMallocHost(&h_zPrevSend, N*M * sizeof(float)); cudaMallocHost(&h_zNext, N*M * sizeof(float)); cudaMallocHost(&h_zNextSend, N*M * sizeof(float));
 
     float *d_errors = NULL, *d_ut0 = NULL, *d_ut1 = NULL, *d_xPrev = NULL, *d_xNext = NULL, *d_yPrev = NULL, *d_yNext = NULL, *d_zPrev = NULL, *d_zNext = NULL;
@@ -536,6 +460,11 @@ int main(int argc, char *argv[]) {
         d_errors, d_ut0, d_ut1, d_xPrev, d_xNext, d_yPrev, d_yNext, d_zPrev, d_zNext
     };
 
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEvent_t events[2] = {start, stop};
+
     int deviceCount = 0;
     cudaGetDeviceCount(&deviceCount);
     cudaSetDevice(rank % 2);
@@ -551,7 +480,7 @@ int main(int argc, char *argv[]) {
         if (rank == 0) {
             printf(cudaGetErrorString(cuda_err));
         }
-        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, cart_comm);
+        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, events, 2, cart_comm);
         return -1;
     }
 
@@ -560,12 +489,16 @@ int main(int argc, char *argv[]) {
     }
 
     float time;
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    makeU0_device(d_ut0, NLow, MLow, KLow, N, M, K, NGlobal, NGlobal, NGlobal, L, L, L, h);
+    dim3 blockSize(2, 4, 64);
+    dim3 gridSize(
+        (N + blockSize.x - 1) / blockSize.x,
+        (M + blockSize.y - 1) / blockSize.y,
+        (K + blockSize.z - 1) / blockSize.z
+    );
+
+    makeU0_device(d_ut0, blockSize, gridSize);
     success = 1;
     cuda_err = cudaGetLastError();
     if (cuda_err != cudaSuccess) {
@@ -576,7 +509,7 @@ int main(int argc, char *argv[]) {
         if (rank == 0) {
             printf(cudaGetErrorString(cuda_err));
         }
-        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, cart_comm);
+        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, events, 2, cart_comm);
         return -1;
     }
     
@@ -587,9 +520,8 @@ int main(int argc, char *argv[]) {
                   left_rank, right_rank, front_rank, back_rank,
                   down_rank, up_rank, NLow, NGlobal, MLow, NGlobal, KLow, NGlobal);
 
-    makeU1_device(d_ut1, d_ut0, NLow, MLow, KLow, N, M, K, NGlobal, NGlobal, NGlobal, 
-                          L, L, L, h, tau, a2,
-                          d_xPrev, d_xNext, d_yPrev, d_yNext, d_zPrev, d_zNext);
+    makeU1_device(d_ut1, d_ut0, blockSize, gridSize,
+                  d_xPrev, d_xNext, d_yPrev, d_yNext, d_zPrev, d_zNext);
 
     success = 1;
     cuda_err = cudaGetLastError();
@@ -601,13 +533,14 @@ int main(int argc, char *argv[]) {
         if (rank == 0) {
             printf(cudaGetErrorString(cuda_err));
         }
-        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, cart_comm);
+        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, events, 2, cart_comm);
         return -1;
     }
     int t = 2;
     
     float nextTime = tau * t;
     float* temp;
+
     for (; nextTime < T; ) {
         exchange_cuda(d_ut1, N, M, K, cart_comm,
                       h_xPrev, h_xNext, h_yPrev, h_yNext, h_zPrev, h_zNext,
@@ -616,44 +549,25 @@ int main(int argc, char *argv[]) {
                       left_rank, right_rank, front_rank, back_rank,
                       down_rank, up_rank, NLow, NGlobal, MLow, NGlobal, KLow, NGlobal);
         
-        dim3 blockSize(4, 4, 4);
-        dim3 gridSize(
-            (N + blockSize.x - 1) / blockSize.x,
-            (M + blockSize.y - 1) / blockSize.y,
-            (K + blockSize.z - 1) / blockSize.z
-        );
-        
-        step_kernel<<<gridSize, blockSize>>>(d_ut1, d_ut0, NLow, MLow, KLow,
-                                            N, M, K, NGlobal, NGlobal, NGlobal,
-                                            h, tau, a2,
-                                            d_xPrev, d_xNext, d_yPrev, d_yNext,
-                                            d_zPrev, d_zNext);
-        
+        makeStep_device(d_ut1, d_ut0, blockSize, gridSize, d_xPrev, d_xNext, d_yPrev, d_yNext, d_zPrev, d_zNext);
+
         if (t % 10 == 0) {
-            cudaMemcpy(h_ut, d_ut0, uShape * sizeof(float), cudaMemcpyDeviceToHost);
-            compute_errors_device(d_ut0, d_errors, NLow, MLow, KLow, N, M, K, L, L, L, nextTime, h);
-            cudaMemcpy(h_errors, d_errors, uShape * sizeof(float), cudaMemcpyDeviceToHost);
-            float maxError = find_max_host(h_errors, N*M*K);
+            compute_errors_device(d_ut0, d_errors, blockSize, gridSize, nextTime);
+            if (save) {
+                cudaMemcpy(h_errors, d_errors, uShape * sizeof(float), cudaMemcpyDeviceToHost);
+            }
+            float maxError = find_max_device(d_errors, uShape);
             float maxErrorGlobal;
             MPI_Reduce(&maxError, &maxErrorGlobal, 1, MPI_FLOAT, MPI_MAX, 0, MPI_COMM_WORLD);
             if (rank == 0)
                 printf("Analytical error at time %f: %.8f\n", nextTime, maxErrorGlobal);
             if (save) {
+                cudaMemcpy(h_ut, d_ut0, uShape * sizeof(float), cudaMemcpyDeviceToHost);
                 snprintf(filename, filenameLength, "floats/floats_t%dNLow%dMLow%dKLow%d.bin", t, NLow, MLow, KLow);
                 saveFloatsBinary(filename, h_ut, uShape);
                 snprintf(filename, filenameLength, "errors/errors_t%dNLow%dMLow%dKLow%d.bin", t, NLow, MLow, KLow);
                 saveFloatsBinary(filename, h_errors, uShape);
             }
-        }
-        cuda_err = cudaGetLastError();
-        success = (cuda_err == cudaSuccess);
-        MPI_Allreduce(&success, &globalSuccess, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
-        if (!globalSuccess) {
-            if (rank == 0) {
-                printf(cudaGetErrorString(cuda_err));
-            }
-            freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, cart_comm);
-            return -1;
         }
         temp = d_ut1;
         d_ut1 = d_ut0;
@@ -661,12 +575,21 @@ int main(int argc, char *argv[]) {
 
         nextTime = tau * ++t;
     }
+    cuda_err = cudaGetLastError();
+    success = (cuda_err == cudaSuccess);
+    MPI_Allreduce(&success, &globalSuccess, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    if (!globalSuccess) {
+        if (rank == 0) {
+            printf(cudaGetErrorString(cuda_err));
+        }
+        freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, events, 2, cart_comm);
+        return -1;
+    }
+
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&time, start, stop);
     time /= 1000.0;  // ms to seconds
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
 
     if (rank == 0) {
         printf("Simulation completed: %d time steps, Time: %f seconds\n", t, time);
@@ -683,6 +606,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, cart_comm);
+    freeBuffersAndTerminate(hostBuffers, 14, deviceBuffers, 9, events, 2, cart_comm);
     return 0;
 }
