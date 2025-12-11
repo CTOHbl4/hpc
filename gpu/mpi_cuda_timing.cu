@@ -201,8 +201,8 @@ void exchange_cuda(float* d_local_data, int N, int M, int K, MPI_Comm cart_comm,
         exchangeIdxZNext = K - 2;
     }
     dim3 blockSize_z(8, 8);
-    dim3 gridSize_z((N + blockSize_z.x - 1) / blockSize_z.x,
-                    (M + blockSize_z.y - 1) / blockSize_z.y);
+    dim3 gridSize_z((M + blockSize_z.x - 1) / blockSize_z.x,
+                    (N + blockSize_z.y - 1) / blockSize_z.y);
 
     pack_z_boundary_kernel<<<gridSize_z, blockSize_z>>>(d_local_data, d_zPrev, exchangeIdxZPrev);
     pack_z_boundary_kernel<<<gridSize_z, blockSize_z>>>(d_local_data, d_zNext, exchangeIdxZNext);
@@ -217,8 +217,8 @@ void exchange_cuda(float* d_local_data, int N, int M, int K, MPI_Comm cart_comm,
     MPI_Irecv(h_zNext, NM, MPI_FLOAT, up_rank, 4, cart_comm, &requests[count++]);
 
     dim3 blockSize_y(8, 8);
-    dim3 gridSize_y((N + blockSize_y.x - 1) / blockSize_y.x,
-                    (K + blockSize_y.y - 1) / blockSize_y.y);
+    dim3 gridSize_y((K + blockSize_y.x - 1) / blockSize_y.x,
+                    (N + blockSize_y.y - 1) / blockSize_y.y);
     if (front_rank != MPI_PROC_NULL) {
 
         pack_y_boundary_kernel<<<gridSize_y, blockSize_y>>>(d_local_data, d_yPrev, 0);
@@ -500,9 +500,9 @@ int main(int argc, char *argv[]) {
 
     dim3 blockSize(64, 4, 2);
     dim3 gridSize(
-        (N + blockSize.x - 1) / blockSize.x,
+        (K + blockSize.x - 1) / blockSize.x,
         (M + blockSize.y - 1) / blockSize.y,
-        (K + blockSize.z - 1) / blockSize.z
+        (N + blockSize.z - 1) / blockSize.z
     );
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
