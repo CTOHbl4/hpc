@@ -28,9 +28,9 @@ __device__ float phi_device(float x, float y, float z) {
 
 __global__ void initialize_u0_kernel(float* res) {
 
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.z * blockDim.z + threadIdx.z;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i >= c_N || j >= c_M || k >= c_K) return;
     
@@ -52,9 +52,9 @@ __global__ void initialize_u1_kernel(float* res, float* ut,
                                      float* xPrev, float* xNext, float* yPrev, float* yNext,
                                      float* zPrev, float* zNext) {
 
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.z * blockDim.z + threadIdx.z;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i >= c_N || j >= c_M || k >= c_K) return;
     int idx = i * c_MK + j * c_K + k;
@@ -97,9 +97,9 @@ __global__ void step_kernel(float* ut1, float* ut0,
                             float* yPrev, float* yNext,
                             float* zPrev, float* zNext) {
 
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.z * blockDim.z + threadIdx.z;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
 
     if ((i >= c_N) || (j >= c_M) || (k >= c_K) || (c_MLow0 && j == 0) || (c_JRight && j == c_M - 1)) return;
     
@@ -132,8 +132,8 @@ void makeStep_device(float* d_ut1, float* d_ut0,
 }
 
 __global__ void pack_z_boundary_kernel(float* local_data, float* z_send, int exchange_idx) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int j = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (i >= c_N || j >= c_M) return;
     
@@ -144,8 +144,8 @@ __global__ void pack_z_boundary_kernel(float* local_data, float* z_send, int exc
 }
 
 __global__ void pack_y_boundary_kernel(float* local_data, float* y_send, int j_offset) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    int k = blockIdx.y * blockDim.y + threadIdx.y;
+    int i = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (i >= c_N || k >= c_K) return;
     
@@ -256,9 +256,9 @@ void exchange_cuda(float* d_local_data, int N, int M, int K, MPI_Comm cart_comm,
 }
 
 __global__ void compute_errors_kernel(float* d_u, float* d_errors, float t) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int i = blockIdx.z * blockDim.z + threadIdx.z;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i >= c_N || j >= c_M || k >= c_K) return;
 
@@ -491,7 +491,7 @@ int main(int argc, char *argv[]) {
     float time;
     cudaEventRecord(start, 0);
 
-    dim3 blockSize(2, 4, 64);
+    dim3 blockSize(64, 4, 2);
     dim3 gridSize(
         (N + blockSize.x - 1) / blockSize.x,
         (M + blockSize.y - 1) / blockSize.y,
